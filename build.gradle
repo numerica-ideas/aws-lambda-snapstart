@@ -1,0 +1,128 @@
+buildscript {
+	ext {
+		springBootVersion = '2.1.4.RELEASE'
+		wrapperVersion = '1.0.21.RELEASE'
+		shadowVersion = '4.0.2'
+	}
+	repositories {
+		mavenLocal()
+		jcenter()
+		mavenCentral()
+		//I had issues with https in dev VM in corporate network, you can change to http
+		maven { url "https://repo.spring.io/snapshot" }
+		maven { url "https://repo.spring.io/milestone" }
+	}
+	dependencies {
+		classpath("com.github.jengelman.gradle.plugins:shadow:${shadowVersion}")
+		classpath("org.springframework.boot.experimental:spring-boot-thin-gradle-plugin:${wrapperVersion}")
+		classpath("org.springframework.boot:spring-boot-gradle-plugin:${springBootVersion}")
+	}
+}
+
+apply plugin: 'java'
+apply plugin: 'maven'
+apply plugin: 'eclipse'
+apply plugin: 'com.github.johnrengelman.shadow'
+apply plugin: 'io.spring.dependency-management'
+apply plugin: 'org.springframework.boot'
+apply plugin: 'org.springframework.boot.experimental.thin-launcher'
+
+group = 'com.numericaideas.snapstart'
+version = '1.0-SNAPSHOT'
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+repositories {
+	mavenLocal()
+	mavenCentral()
+	//I had issues with https in VM in corporate network, you can change to http
+	maven { url "https://repo.spring.io/snapshot" }
+	maven { url "https://repo.spring.io/milestone" }
+}
+
+ext {
+	springCloudFunctionVersion = "2.0.0.BUILD-SNAPSHOT"
+	awsLambdaEventsVersion = "2.2.6"
+	awsSpringServerlessContainerVersion = "[1.6,)"
+	jacksonVersion = "2.9.8"
+}
+ext['reactor.version'] = "3.1.7.RELEASE"
+
+assemble.dependsOn = [shadowJar, thinJar]
+
+jar {
+	manifest {
+		//both Main-Class and Start-Class have to be specified
+		//these point to your @SpringBootApplication annotated class
+		attributes 'Main-Class': 'com.numericaideas.snapstart.Application'
+		attributes 'Start-Class': 'com.numericaideas.snapstart.Application'
+	}
+}
+
+import com.github.jengelman.gradle.plugins.shadow.transformers.*
+
+
+shadowJar {
+	classifier = 'aws'
+
+	//you can write exclusion rules to save space in the .jar produced since it is limited to 50MB
+	dependencies {
+		exclude(dependency("org.springframework.cloud:spring-cloud-function-web:${springCloudFunctionVersion}"))
+		exclude(dependency { it.moduleGroup == 'org.apache.tomcat.embed' })
+
+		/*
+			EXCLUSIONS FOR LAYERS
+			Typically jars are exploded and their class files put into a shadow jar. We can exclude
+			jars from this process if the jar will be provided in a Lambda Layer
+		*/
+		exclude 'spring*.jar'
+	}
+
+
+	// Required for Spring
+	mergeServiceFiles()
+	append 'META-INF/spring.handlers'
+	append 'META-INF/spring.schemas'
+	append 'META-INF/spring.tooling'
+	transform(PropertiesFileTransformer) {
+		paths = ['META-INF/spring.factories']
+		mergeStrategy = "append"
+	}
+}
+
+configurations {
+	testCompile.extendsFrom(compileOnly)
+}
+
+dependencies {
+	compile("org.springframework.cloud:spring-cloud-starter-function-web:${springCloudFunctionVersion}")
+	compile("org.springframework.cloud:spring-cloud-function-adapter-aws:${springCloudFunctionVersion}")
+
+	//these Jackson dependencies are needed in order to deserialize a ScheduledEvent
+	compileOnly("com.fasterxml.jackson.core:jackson-core:${jacksonVersion}")
+	compileOnly("com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}")
+	compile("com.fasterxml.jackson.datatype:jackson-datatype-joda:${jacksonVersion}")
+
+	//if you use ScheduledEvent or any lambda events in your code, this has to be compile, otherwise it can be compileOnly
+	compile("com.amazonaws:aws-lambda-java-events:${awsLambdaEventsVersion}")
+	compile("com.amazonaws.serverless:aws-serverless-java-container-springboot2:${awsSpringServerlessContainerVersion}")
+	testCompile('org.springframework.boot:spring-boot-starter-test')
+}
+
+//copy all runtime dependencies to tmp/java/lib so that they can be put into Lambda layers easily
+task copyRuntimeDependencies(type: Copy){
+	from configurations.runtime
+	into "${buildDir}/tmp/java/lib"
+}
+
+//zips from the /tmp/java/lib directory all jars that start with "spring", creates build/lib/spring-layer.zip
+//you can write a task like this to layer any jars you want based on a filter, just remember to write a corresponding exclude rule in shadowJar.dependencies
+task buildSpringLayer(type: Zip) {
+	dependsOn "copyRuntimeDependencies"
+	from "${buildDir}/tmp/"
+	include "java/lib/spring*"
+	archiveName "spring-layer.zip"
+	setDestinationDir new File("${buildDir}/libs")
+}
+
+build.dependsOn(buildSpringLayer)
