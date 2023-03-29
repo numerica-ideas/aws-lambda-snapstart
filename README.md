@@ -4,6 +4,8 @@ This project contains source code and supporting files for a serverless applicat
 
 There we have activated **SnapStart** from the `template.yml` files
 
+The following article describes it all: https://blog.numericaideas.com/lambda-performance-improvement-with-snapstart
+
 ## Stacks
 
 - Java
